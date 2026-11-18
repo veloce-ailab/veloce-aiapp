@@ -7,8 +7,8 @@ android {
         applicationId "com.veloce.aiapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 300
-        versionName "0.3.0"
+        versionCode 310
+        versionName "0.3.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +16,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // 固定签名：keystore 随仓库提交（本项目开源，无需保密），
+    // 这样每次 CI 构建出的 APK 签名一致，可以直接覆盖安装升级。
+    signingConfigs {
+        veloce {
+            storeFile file('veloce-release.p12')
+            storeType 'PKCS12'
+            storePassword 'veloceai'
+            keyAlias 'veloce'
+            keyPassword 'veloceai'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.veloce
+        }
         release {
+            signingConfig signingConfigs.veloce
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
