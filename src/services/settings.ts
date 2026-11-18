@@ -13,6 +13,8 @@ type Settings = {
   apiKey: string | null
   /** 自定义 API 基地址；null 表示使用构建期默认值 */
   apiBaseUrl: string | null
+  /** 选中的模型；null 表示使用默认模型 */
+  model: string | null
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -25,6 +27,7 @@ type Settings = {
 const KEYS = {
   apiKey: 'chat-demo:api-key',
   apiBaseUrl: 'chat-demo:api-base-url',
+  model: 'chat-demo:model',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -101,6 +104,7 @@ export const useSettings = create<Settings>(() => {
   return {
     apiKey: read(KEYS.apiKey),
     apiBaseUrl,
+    model: read(KEYS.model),
     locale: initialLocale(),
     location: initialLocation(),
     themePreference: initialThemePreference(),
@@ -135,6 +139,12 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setModel = (model: string | null) => {
+  const normalized = model?.trim() || null
+  write(KEYS.model, normalized)
+  useSettings.setState({ model: normalized })
 }
 
 /** 保存自定义 API 基地址（Veloce 授权后写入站点地址 + /v1） */

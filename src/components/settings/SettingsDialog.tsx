@@ -34,6 +34,7 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { VeloceAuthorizeField } from './VeloceAuthorizeField.js'
+import { ModelField } from './ModelField.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
@@ -99,6 +100,7 @@ const SettingsContent = () => {
             <>
               <ThemeSetting />
               <LocaleSetting />
+              <ModelField />
               <TtsVoiceSetting />
               <LocationSetting />
             </>
