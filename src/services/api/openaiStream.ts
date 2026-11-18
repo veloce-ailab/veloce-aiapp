@@ -11,11 +11,18 @@ import { readServerSentEvents } from './sse.js'
  *
  * 应用内部一直用 Anthropic 形态的事件描述回复，所以这里把 Chat Completions
  * 与 Responses 的流翻译成同一套 MessageStreamEvent，UI 与存储层无需区分协议。
- * 只翻译文本内容：deepseek_web_search、thinking、safety_check、附件等扩展能力
- * 仅在 claude 协议下可用。
+ *
+ * 深度思考同样会翻译：Chat Completions 用 `reasoning_effort` 请求、
+ * 从 `delta.reasoning_content`（DeepSeek / vLLM）或 `delta.reasoning`
+ * （OpenRouter）读取思考内容；Responses 用 `reasoning` 请求、
+ * 从 `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` 读取。
+ * 思考块排在文本块前面，与 Claude 协议一致。
  */
 
 type ChatCompletionsMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+/** 思考强度：深度思考开启时使用，两家协议字段名不同但取值一致 */
+export const REASONING_EFFORT = 'medium'
 
 const blockText = (content: unknown): string => {
   if (typeof content === 'string') {
@@ -35,7 +42,7 @@ const blockText = (content: unknown): string => {
     .join('\n')
 }
 
-/** Anthropic 形态的消息 → OpenAI Chat Completions 的 messages */
+/** Anthropic 形态的消息 → OpenAI Chat Completions 的 messages（思考块不回传） */
 export const toChatCompletionsMessages = (body: CreateMessageRequest): ChatCompletionsMessage[] => {
   const messages: ChatCompletionsMessage[] = []
   if (body.system) {
@@ -46,7 +53,11 @@ export const toChatCompletionsMessages = (body: CreateMessageRequest): ChatCompl
       messages.push({ role: 'system', content: message.content })
       continue
     }
-    messages.push({ role: message.role, content: blockText(message.content) })
+    const content = blockText(message.content)
+    if (!content) {
+      continue
+    }
+    messages.push({ role: message.role, content })
   }
   return messages
 }
@@ -55,7 +66,7 @@ export const buildChatCompletionsBody = (body: CreateMessageRequest) => ({
   model: body.model,
   messages: toChatCompletionsMessages(body),
   stream: true,
-  ...(body.thinking?.type === 'enabled' ? { reasoning_effort: 'medium' } : {}),
+  ...(body.thinking?.type === 'enabled' ? { reasoning_effort: REASONING_EFFORT } : {}),
 })
 
 export const buildResponsesBody = (body: CreateMessageRequest) => ({
@@ -71,8 +82,12 @@ export const buildResponsesBody = (body: CreateMessageRequest) => ({
           text: blockText(message.content),
         },
       ],
-    })),
+    }))
+    .filter((item) => item.content[0].text),
   stream: true,
+  ...(body.thinking?.type === 'enabled'
+    ? { reasoning: { effort: REASONING_EFFORT, summary: 'auto' } }
+    : {}),
 })
 
 const stopReasonFor = (reason: unknown): StopReason => {
@@ -88,24 +103,32 @@ const stopReasonFor = (reason: unknown): StopReason => {
 
 const usageOf = (raw: unknown) => {
   const usage = (raw ?? {}) as { input_tokens?: unknown; output_tokens?: unknown }
-  const input = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0
-  const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
   return {
-    input_tokens: input,
+    input_tokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
-    output_tokens: output,
+    output_tokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
   }
 }
 
-type TextStreamState = {
+/** 块序号分配：思考块在前（若有），文本块在后 */
+type StreamState = {
   started: boolean
-  blockOpen: boolean
   finished: boolean
+  thinkingIndex: number | null
+  textIndex: number | null
+  nextIndex: number
 }
 
-/** 依次产出：message_start → content_block_start → text_delta… → 收尾事件 */
-const emitStart = (state: TextStreamState, id: string, model: string): MessageStreamEvent[] => {
+const newState = (): StreamState => ({
+  started: false,
+  finished: false,
+  thinkingIndex: null,
+  textIndex: null,
+  nextIndex: 0,
+})
+
+const emitStart = (state: StreamState, id: string, model: string): MessageStreamEvent[] => {
   if (state.started) {
     return []
   }
@@ -113,36 +136,72 @@ const emitStart = (state: TextStreamState, id: string, model: string): MessageSt
   return [{ type: 'message_start', message: { id, model } }]
 }
 
-const emitText = (state: TextStreamState, text: string, index = 0): MessageStreamEvent[] => {
-  const events: MessageStreamEvent[] = []
-  if (!state.started) {
-    events.push(...emitStart(state, '', ''))
+const closeThinking = (state: StreamState): MessageStreamEvent[] => {
+  if (state.thinkingIndex === null) {
+    return []
   }
-  if (!state.blockOpen) {
-    state.blockOpen = true
+  const index = state.thinkingIndex
+  state.thinkingIndex = null
+  return [{ type: 'content_block_stop', index }]
+}
+
+const emitThinking = (state: StreamState, text: string): MessageStreamEvent[] => {
+  if (!text) {
+    return []
+  }
+  const events: MessageStreamEvent[] = []
+  if (state.thinkingIndex === null && state.textIndex !== null) {
+    // 文本已经开始后再来思考内容，忽略（正常顺序不会出现）
+    return events
+  }
+  if (state.thinkingIndex === null) {
+    state.thinkingIndex = state.nextIndex++
     events.push({
       type: 'content_block_start',
-      index,
-      content_block: { type: 'text', text: '' } as OutputBlockStart,
+      index: state.thinkingIndex,
+      content_block: { type: 'thinking', thinking: '' } as OutputBlockStart,
     })
   }
-  events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
+  events.push({
+    type: 'content_block_delta',
+    index: state.thinkingIndex,
+    delta: { type: 'thinking_delta', thinking: text },
+  })
   return events
 }
 
-const emitFinish = (
-  state: TextStreamState,
-  stopReason: unknown,
-  usage: unknown,
-  index = 0
-): MessageStreamEvent[] => {
+const emitText = (state: StreamState, text: string): MessageStreamEvent[] => {
+  if (!text) {
+    return []
+  }
+  const events: MessageStreamEvent[] = []
+  // 文本开始时结束思考块
+  events.push(...closeThinking(state))
+  if (state.textIndex === null) {
+    state.textIndex = state.nextIndex++
+    events.push({
+      type: 'content_block_start',
+      index: state.textIndex,
+      content_block: { type: 'text', text: '' } as OutputBlockStart,
+    })
+  }
+  events.push({
+    type: 'content_block_delta',
+    index: state.textIndex,
+    delta: { type: 'text_delta', text },
+  })
+  return events
+}
+
+const emitFinish = (state: StreamState, stopReason: unknown, usage: unknown): MessageStreamEvent[] => {
   if (state.finished) {
     return []
   }
   state.finished = true
   const events: MessageStreamEvent[] = []
-  if (state.blockOpen) {
-    events.push({ type: 'content_block_stop', index })
+  events.push(...closeThinking(state))
+  if (state.textIndex !== null) {
+    events.push({ type: 'content_block_stop', index: state.textIndex })
   }
   events.push({
     type: 'message_delta',
@@ -153,12 +212,27 @@ const emitFinish = (
   return events
 }
 
+/** 从 Chat Completions 的 delta 里取思考文本：DeepSeek 用 reasoning_content，OpenRouter 用 reasoning */
+const reasoningOf = (delta: unknown): string => {
+  if (typeof delta !== 'object' || delta === null) {
+    return ''
+  }
+  const record = delta as { reasoning_content?: unknown; reasoning?: unknown }
+  if (typeof record.reasoning_content === 'string') {
+    return record.reasoning_content
+  }
+  if (typeof record.reasoning === 'string') {
+    return record.reasoning
+  }
+  return ''
+}
+
 /** POST {base}/chat/completions 的 SSE → MessageStreamEvent */
 export async function* streamChatCompletions(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const state: TextStreamState = { started: false, blockOpen: false, finished: false }
+  const state = newState()
   for await (const { data } of readServerSentEvents(stream, signal)) {
     if (data.trim() === '[DONE]') {
       break
@@ -172,23 +246,20 @@ export async function* streamChatCompletions(
     const chunk = payload as {
       id?: unknown
       model?: unknown
-      choices?: { delta?: { content?: unknown }; finish_reason?: unknown }[]
+      choices?: { delta?: unknown; finish_reason?: unknown }[]
       usage?: unknown
     }
     if (typeof chunk.id === 'string') {
-      const startEvents = emitStart(
-        state,
-        chunk.id,
-        typeof chunk.model === 'string' ? chunk.model : ''
-      )
-      if (startEvents.length) {
-        yield* startEvents
-      }
+      yield* emitStart(state, chunk.id, typeof chunk.model === 'string' ? chunk.model : '')
     }
     const choice = chunk.choices?.[0]
-    const text = choice?.delta?.content
-    if (typeof text === 'string' && text) {
-      yield* emitText(state, text)
+    const reasoning = reasoningOf(choice?.delta)
+    if (reasoning) {
+      yield* emitThinking(state, reasoning)
+    }
+    const delta = choice?.delta as { content?: unknown } | undefined
+    if (typeof delta?.content === 'string' && delta.content) {
+      yield* emitText(state, delta.content)
     }
     if (choice?.finish_reason) {
       yield* emitFinish(state, choice.finish_reason, chunk.usage)
@@ -204,7 +275,7 @@ export async function* streamResponses(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const state: TextStreamState = { started: false, blockOpen: false, finished: false }
+  const state = newState()
   let responseID = ''
   let model = ''
   let lastUsage: unknown = null
@@ -223,43 +294,54 @@ export async function* streamResponses(
     const record = (payload ?? {}) as Record<string, unknown>
     const type = typeof record.type === 'string' ? record.type : event
 
-    if (type === 'response.created' || type === 'response.in_progress') {
-      const response = (record.response ?? {}) as { id?: unknown; model?: unknown; usage?: unknown }
-      if (typeof response.id === 'string') {
-        responseID = response.id
+    switch (type) {
+      case 'response.created':
+      case 'response.in_progress': {
+        const response = (record.response ?? {}) as { id?: unknown; model?: unknown }
+        if (typeof response.id === 'string') {
+          responseID = response.id
+        }
+        if (typeof response.model === 'string') {
+          model = response.model
+        }
+        yield* emitStart(state, responseID, model)
+        break
       }
-      if (typeof response.model === 'string') {
-        model = response.model
+      case 'response.reasoning_summary_text.delta':
+      case 'response.reasoning_text.delta': {
+        const delta = record.delta
+        if (typeof delta === 'string' && delta) {
+          yield* emitThinking(state, delta)
+        }
+        break
       }
-      yield* emitStart(state, responseID, model)
-      continue
-    }
-
-    if (type === 'response.output_text.delta') {
-      const delta = record.delta
-      if (typeof delta === 'string' && delta) {
-        yield* emitText(state, delta)
+      case 'response.output_text.delta': {
+        const delta = record.delta
+        if (typeof delta === 'string' && delta) {
+          yield* emitText(state, delta)
+        }
+        break
       }
-      continue
-    }
-
-    if (type === 'response.completed' || type === 'response.incomplete') {
-      const response = (record.response ?? {}) as {
-        usage?: unknown
-        status?: unknown
-        incomplete_details?: { reason?: unknown }
+      case 'response.completed':
+      case 'response.incomplete': {
+        const response = (record.response ?? {}) as {
+          usage?: unknown
+          incomplete_details?: { reason?: unknown }
+        }
+        lastUsage = response.usage ?? null
+        if (response.incomplete_details?.reason) {
+          stopReason = response.incomplete_details.reason
+        }
+        yield* emitFinish(state, stopReason, lastUsage)
+        return
       }
-      lastUsage = response.usage ?? null
-      if (response.incomplete_details?.reason) {
-        stopReason = response.incomplete_details.reason
+      case 'error':
+      case 'response.failed': {
+        const message = (record.error as { message?: unknown })?.message
+        throw new Error(typeof message === 'string' ? message : 'response failed')
       }
-      yield* emitFinish(state, stopReason, lastUsage)
-      return
-    }
-
-    if (type === 'error' || type === 'response.failed') {
-      const message = (record.error as { message?: unknown })?.message
-      throw new Error(typeof message === 'string' ? message : 'response failed')
+      default:
+        break
     }
   }
   if (!state.finished) {

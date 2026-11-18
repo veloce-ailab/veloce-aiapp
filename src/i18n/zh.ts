@@ -99,7 +99,7 @@ export const zh = {
   avatarMenuSettingsDialogThemeSelectDarkOption: '深色',
   avatarMenuSettingsDialogThemeSelectSystemOption: '跟随系统',
   protocolLabel: '接口协议',
-  protocolDescription: 'Claude Messages 支持搜索、附件与深度思考；Chat Completions / Responses 是 OpenAI 兼容格式，只传文本。',
+  protocolDescription: '三种协议都支持文本与深度思考；搜索、附件等扩展能力只在 Claude Messages 下可用。',
   protocolClaude: 'Claude Messages',
   protocolCompletions: 'Chat Completions',
   protocolResponses: 'Responses',

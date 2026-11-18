@@ -104,7 +104,7 @@ export const en = {
   avatarMenuSettingsDialogThemeSelectDarkOption: 'Dark',
   avatarMenuSettingsDialogThemeSelectSystemOption: 'System',
   protocolLabel: 'API protocol',
-  protocolDescription: 'Claude Messages supports search, attachments and thinking; Chat Completions and Responses are OpenAI-compatible and text-only.',
+  protocolDescription: 'All three protocols support text and thinking; search and attachments stay on Claude Messages.',
   protocolClaude: 'Claude Messages',
   protocolCompletions: 'Chat Completions',
   protocolResponses: 'Responses',
