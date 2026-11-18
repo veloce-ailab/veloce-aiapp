@@ -159,7 +159,8 @@ export async function* streamMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...body, stream: true }),
+    // attachmentData 只供 OpenAI 兼容协议内联附件，claude 协议用 Files API
+    body: JSON.stringify({ ...body, attachmentData: undefined, stream: true }),
     signal,
   })
   const contentType = response.headers.get('Content-Type') ?? ''

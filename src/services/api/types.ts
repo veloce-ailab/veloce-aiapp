@@ -175,10 +175,18 @@ export type DeepseekReadUrlTool = {
   name: 'deepseek_read_url'
 }
 
+/**
+ * OpenAI 兼容协议（completions / responses）用的附件原文：file_id → data URL。
+ * claude 协议只用 Files API 的 file_id，不需要这个字段。
+ */
+export type AttachmentPayload = { dataUrl: string; filename?: string }
+
 export type CreateMessageRequest = {
   model: ChatModel
   system: string
   messages: MessageParam[]
+  /** 附件原文，仅 OpenAI 兼容协议使用 */
+  attachmentData?: Record<string, AttachmentPayload>
   thinking: { type: 'enabled' | 'disabled' }
   tools: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
   safety_check: { level: 'high' }

@@ -3,6 +3,8 @@ import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import { DEFAULT_CHAT_MODEL, type ChatModel, type CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
+import { getApiProtocol } from '../api/protocol.js'
+import type { AttachmentPayload } from '../api/types.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
@@ -31,6 +33,50 @@ import {
   type SessionSummary,
   type UserMessage,
 } from './types.js'
+
+const blobToDataURL = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'))
+    reader.readAsDataURL(blob)
+  })
+
+/**
+ * OpenAI 兼容协议没有 Files API，附件要以 data URL 内联：
+ * 从 IndexedDB 取出原件交给请求体。claude 协议只用 file_id，不读原件。
+ */
+const attachmentPayloads = async (sessionId: string): Promise<Record<string, AttachmentPayload>> => {
+  if (getApiProtocol() === 'claude') {
+    return {}
+  }
+  const session = getSession(sessionId)
+  if (!session) {
+    return {}
+  }
+  const payloads: Record<string, AttachmentPayload> = {}
+  for (const message of session.messages) {
+    if (message.role !== 'user') {
+      continue
+    }
+    for (const file of message.files) {
+      if (!file.serverId || payloads[file.serverId]) {
+        continue
+      }
+      const blob = await db.loadFile(file.id)
+      if (!blob) {
+        continue
+      }
+      const typed = file.mimeType && blob.type !== file.mimeType ? new Blob([blob], { type: file.mimeType }) : blob
+      try {
+        payloads[file.serverId] = { dataUrl: await blobToDataURL(typed), filename: file.name }
+      } catch {
+        // 读不到原件时跳过，避免整轮请求失败
+      }
+    }
+  }
+  return payloads
+}
 
 /** 当前使用的模型：设置里选中的优先，未选择时用默认模型 */
 const currentModel = (): ChatModel => useSettings.getState().model || DEFAULT_CHAT_MODEL
@@ -996,10 +1042,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           initial.thinking ?? false,
           latestReminder
         )
+        const attachmentData = await attachmentPayloads(sessionId)
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
             model: initial.model ?? currentModel(),
+            ...(Object.keys(attachmentData).length > 0 ? { attachmentData } : {}),
             system: SYSTEM_PROMPT,
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },

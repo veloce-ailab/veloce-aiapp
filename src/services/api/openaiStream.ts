@@ -1,29 +1,45 @@
 import type {
+  AttachmentPayload,
   CreateMessageRequest,
   MessageStreamEvent,
   OutputBlockStart,
   StopReason,
+  TextCitation,
 } from './types.js'
 import { readServerSentEvents } from './sse.js'
 
 /**
  * OpenAI 兼容协议的请求体转换与流式解析。
  *
- * 应用内部一直用 Anthropic 形态的事件描述回复，所以这里把 Chat Completions
- * 与 Responses 的流翻译成同一套 MessageStreamEvent，UI 与存储层无需区分协议。
+ * 应用内部一直用 Anthropic 形态的事件描述回复，这里把 Chat Completions 与
+ * Responses 的请求/流翻译成同一套 MessageStreamEvent，UI 与存储层无需区分协议。
  *
- * 深度思考同样会翻译：Chat Completions 用 `reasoning_effort` 请求、
- * 从 `delta.reasoning_content`（DeepSeek / vLLM）或 `delta.reasoning`
- * （OpenRouter）读取思考内容；Responses 用 `reasoning` 请求、
- * 从 `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` 读取。
- * 思考块排在文本块前面，与 Claude 协议一致。
+ * 能力对应关系：
+ * - 深度思考：completions 用 `reasoning_effort` + `delta.reasoning_content|reasoning`；
+ *   responses 用 `reasoning` + `response.reasoning_summary_text.delta`
+ * - 联网搜索：completions 用 `web_search_options`；responses 用 `tools: [{type: web_search}]`；
+ *   两者的 url_citation 注解都翻译成 citations_delta，界面上照常显示来源
+ * - 附件：图片以 data URL 内联（completions 用 image_url，responses 用 input_image）；
+ *   responses 的文档用 input_file。completions 不支持文档，会被跳过
  */
 
-type ChatCompletionsMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'input_text'; text: string }
+  | { type: 'output_text'; text: string }
+  | { type: 'input_image'; image_url: string }
+  | { type: 'input_file'; filename: string; file_data: string }
 
-/** 思考强度：深度思考开启时使用，两家协议字段名不同但取值一致 */
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string | ContentPart[] }
+
+/** 思考强度：深度思考开启时使用 */
 export const REASONING_EFFORT = 'medium'
 
+const isSearchEnabled = (body: CreateMessageRequest) =>
+  (body.tools ?? []).some((tool) => tool.type === 'deepseek_web_search')
+
+/** 文本块拼接（思考块、工具块不参与历史回传） */
 const blockText = (content: unknown): string => {
   if (typeof content === 'string') {
     return content
@@ -42,9 +58,49 @@ const blockText = (content: unknown): string => {
     .join('\n')
 }
 
-/** Anthropic 形态的消息 → OpenAI Chat Completions 的 messages（思考块不回传） */
-export const toChatCompletionsMessages = (body: CreateMessageRequest): ChatCompletionsMessage[] => {
-  const messages: ChatCompletionsMessage[] = []
+/** 用户消息里的附件块 → data URL 内容片段 */
+const attachmentParts = (
+  content: unknown,
+  attachments: Record<string, AttachmentPayload> | undefined,
+  mode: 'chat' | 'responses'
+): ContentPart[] => {
+  if (!Array.isArray(content) || !attachments) {
+    return []
+  }
+  const parts: ContentPart[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) {
+      continue
+    }
+    const record = block as { type?: unknown; source?: { file_id?: unknown } }
+    const fileID = record.source?.file_id
+    if (typeof fileID !== 'string') {
+      continue
+    }
+    const payload = attachments[fileID]
+    if (!payload) {
+      continue
+    }
+    if (record.type === 'image') {
+      parts.push(
+        mode === 'chat'
+          ? { type: 'image_url', image_url: { url: payload.dataUrl } }
+          : { type: 'input_image', image_url: payload.dataUrl }
+      )
+    } else if (record.type === 'document' && mode === 'responses') {
+      parts.push({
+        type: 'input_file',
+        filename: payload.filename ?? 'document',
+        file_data: payload.dataUrl,
+      })
+    }
+  }
+  return parts
+}
+
+/** Anthropic 形态的消息 → OpenAI Chat Completions 的 messages */
+export const toChatCompletionsMessages = (body: CreateMessageRequest): ChatMessage[] => {
+  const messages: ChatMessage[] = []
   if (body.system) {
     messages.push({ role: 'system', content: body.system })
   }
@@ -53,11 +109,18 @@ export const toChatCompletionsMessages = (body: CreateMessageRequest): ChatCompl
       messages.push({ role: 'system', content: message.content })
       continue
     }
-    const content = blockText(message.content)
-    if (!content) {
+    const text = blockText(message.content)
+    const images = message.role === 'user' ? attachmentParts(message.content, body.attachmentData, 'chat') : []
+    if (images.length === 0) {
+      if (text) {
+        messages.push({ role: message.role, content: text })
+      }
       continue
     }
-    messages.push({ role: message.role, content })
+    messages.push({
+      role: message.role,
+      content: [...(text ? [{ type: 'text' as const, text }] : []), ...images],
+    })
   }
   return messages
 }
@@ -67,6 +130,8 @@ export const buildChatCompletionsBody = (body: CreateMessageRequest) => ({
   messages: toChatCompletionsMessages(body),
   stream: true,
   ...(body.thinking?.type === 'enabled' ? { reasoning_effort: REASONING_EFFORT } : {}),
+  // OpenAI 的搜索开关：让上游用搜索结果作答，并在 delta.annotations 里回引用
+  ...(isSearchEnabled(body) ? { web_search_options: { search_context_size: 'medium' } } : {}),
 })
 
 export const buildResponsesBody = (body: CreateMessageRequest) => ({
@@ -74,20 +139,29 @@ export const buildResponsesBody = (body: CreateMessageRequest) => ({
   ...(body.system ? { instructions: body.system } : {}),
   input: body.messages
     .filter((message) => message.role !== 'latest_reminder')
-    .map((message) => ({
-      role: message.role === 'assistant' ? 'assistant' : 'user',
-      content: [
-        {
-          type: message.role === 'assistant' ? 'output_text' : 'input_text',
-          text: blockText(message.content),
-        },
-      ],
-    }))
-    .filter((item) => item.content[0].text),
+    .map((message) => {
+      const text = blockText(message.content)
+      const parts =
+        message.role === 'user' ? attachmentParts(message.content, body.attachmentData, 'responses') : []
+      const content: ContentPart[] = [
+        ...parts,
+        ...(text
+          ? [
+              {
+                type: message.role === 'assistant' ? ('output_text' as const) : ('input_text' as const),
+                text,
+              },
+            ]
+          : []),
+      ]
+      return { role: message.role === 'assistant' ? 'assistant' : 'user', content }
+    })
+    .filter((item) => item.content.length > 0),
   stream: true,
   ...(body.thinking?.type === 'enabled'
     ? { reasoning: { effort: REASONING_EFFORT, summary: 'auto' } }
     : {}),
+  ...(isSearchEnabled(body) ? { tools: [{ type: 'web_search' }] } : {}),
 })
 
 const stopReasonFor = (reason: unknown): StopReason => {
@@ -118,6 +192,7 @@ type StreamState = {
   thinkingIndex: number | null
   textIndex: number | null
   nextIndex: number
+  text: string
 }
 
 const newState = (): StreamState => ({
@@ -126,6 +201,7 @@ const newState = (): StreamState => ({
   thinkingIndex: null,
   textIndex: null,
   nextIndex: 0,
+  text: '',
 })
 
 const emitStart = (state: StreamState, id: string, model: string): MessageStreamEvent[] => {
@@ -145,13 +221,26 @@ const closeThinking = (state: StreamState): MessageStreamEvent[] => {
   return [{ type: 'content_block_stop', index }]
 }
 
-const emitThinking = (state: StreamState, text: string): MessageStreamEvent[] => {
-  if (!text) {
+const openText = (state: StreamState): MessageStreamEvent[] => {
+  const events: MessageStreamEvent[] = []
+  events.push(...closeThinking(state))
+  if (state.textIndex === null) {
+    state.textIndex = state.nextIndex++
+    events.push({
+      type: 'content_block_start',
+      index: state.textIndex,
+      content_block: { type: 'text', text: '' } as OutputBlockStart,
+    })
+  }
+  return events
+}
+
+const emitThinking = (state: StreamState, thinking: string): MessageStreamEvent[] => {
+  if (!thinking) {
     return []
   }
   const events: MessageStreamEvent[] = []
   if (state.thinkingIndex === null && state.textIndex !== null) {
-    // 文本已经开始后再来思考内容，忽略（正常顺序不会出现）
     return events
   }
   if (state.thinkingIndex === null) {
@@ -165,7 +254,7 @@ const emitThinking = (state: StreamState, text: string): MessageStreamEvent[] =>
   events.push({
     type: 'content_block_delta',
     index: state.thinkingIndex,
-    delta: { type: 'thinking_delta', thinking: text },
+    delta: { type: 'thinking_delta', thinking },
   })
   return events
 }
@@ -175,21 +264,54 @@ const emitText = (state: StreamState, text: string): MessageStreamEvent[] => {
     return []
   }
   const events: MessageStreamEvent[] = []
-  // 文本开始时结束思考块
-  events.push(...closeThinking(state))
-  if (state.textIndex === null) {
-    state.textIndex = state.nextIndex++
-    events.push({
-      type: 'content_block_start',
-      index: state.textIndex,
-      content_block: { type: 'text', text: '' } as OutputBlockStart,
-    })
-  }
+  events.push(...openText(state))
+  state.text += text
   events.push({
     type: 'content_block_delta',
-    index: state.textIndex,
+    index: state.textIndex as number,
     delta: { type: 'text_delta', text },
   })
+  return events
+}
+
+/** OpenAI 的 url_citation 注解 → 内部引用事件 */
+const emitCitations = (state: StreamState, annotations: unknown): MessageStreamEvent[] => {
+  if (!Array.isArray(annotations) || annotations.length === 0) {
+    return []
+  }
+  const events: MessageStreamEvent[] = []
+  events.push(...openText(state))
+  for (const item of annotations) {
+    if (typeof item !== 'object' || item === null) {
+      continue
+    }
+    const record = item as {
+      type?: unknown
+      url?: unknown
+      title?: unknown
+      url_citation?: { url?: unknown; title?: unknown }
+    }
+    if (record.type !== 'url_citation') {
+      continue
+    }
+    const url = record.url_citation?.url ?? record.url
+    if (typeof url !== 'string' || !url) {
+      continue
+    }
+    const rawTitle = record.url_citation?.title ?? record.title
+    const citation: TextCitation = {
+      type: 'web_search_result_location',
+      url,
+      title: typeof rawTitle === 'string' && rawTitle ? rawTitle : null,
+      cited_text: state.text.trim(),
+      encrypted_index: '',
+    }
+    events.push({
+      type: 'content_block_delta',
+      index: state.textIndex as number,
+      delta: { type: 'citations_delta', citation },
+    })
+  }
   return events
 }
 
@@ -221,10 +343,7 @@ const reasoningOf = (delta: unknown): string => {
   if (typeof record.reasoning_content === 'string') {
     return record.reasoning_content
   }
-  if (typeof record.reasoning === 'string') {
-    return record.reasoning
-  }
-  return ''
+  return typeof record.reasoning === 'string' ? record.reasoning : ''
 }
 
 /** POST {base}/chat/completions 的 SSE → MessageStreamEvent */
@@ -253,13 +372,16 @@ export async function* streamChatCompletions(
       yield* emitStart(state, chunk.id, typeof chunk.model === 'string' ? chunk.model : '')
     }
     const choice = chunk.choices?.[0]
-    const reasoning = reasoningOf(choice?.delta)
+    const delta = choice?.delta as { content?: unknown; annotations?: unknown } | undefined
+    const reasoning = reasoningOf(delta)
     if (reasoning) {
       yield* emitThinking(state, reasoning)
     }
-    const delta = choice?.delta as { content?: unknown } | undefined
     if (typeof delta?.content === 'string' && delta.content) {
       yield* emitText(state, delta.content)
+    }
+    if (delta?.annotations) {
+      yield* emitCitations(state, delta.annotations)
     }
     if (choice?.finish_reason) {
       yield* emitFinish(state, choice.finish_reason, chunk.usage)
@@ -278,7 +400,6 @@ export async function* streamResponses(
   const state = newState()
   let responseID = ''
   let model = ''
-  let lastUsage: unknown = null
   let stopReason: unknown = 'stop'
 
   for await (const { event, data } of readServerSentEvents(stream, signal)) {
@@ -310,16 +431,20 @@ export async function* streamResponses(
       case 'response.reasoning_summary_text.delta':
       case 'response.reasoning_text.delta': {
         const delta = record.delta
-        if (typeof delta === 'string' && delta) {
+        if (typeof delta === 'string') {
           yield* emitThinking(state, delta)
         }
         break
       }
       case 'response.output_text.delta': {
         const delta = record.delta
-        if (typeof delta === 'string' && delta) {
+        if (typeof delta === 'string') {
           yield* emitText(state, delta)
         }
+        break
+      }
+      case 'response.output_text.annotation.added': {
+        yield* emitCitations(state, [record.annotation])
         break
       }
       case 'response.completed':
@@ -328,11 +453,10 @@ export async function* streamResponses(
           usage?: unknown
           incomplete_details?: { reason?: unknown }
         }
-        lastUsage = response.usage ?? null
         if (response.incomplete_details?.reason) {
           stopReason = response.incomplete_details.reason
         }
-        yield* emitFinish(state, stopReason, lastUsage)
+        yield* emitFinish(state, stopReason, response.usage ?? null)
         return
       }
       case 'error':
@@ -345,6 +469,6 @@ export async function* streamResponses(
     }
   }
   if (!state.finished) {
-    yield* emitFinish(state, stopReason, lastUsage)
+    yield* emitFinish(state, stopReason, null)
   }
 }
