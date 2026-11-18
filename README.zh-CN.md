@@ -52,7 +52,10 @@ npx cap open android  # 或 ios
 1. 打开 设置 → 数据管理 → **Veloce 站点授权**，填入站点地址（例如 `https://veloce.example.com`）；
 2. 点击「使用 Veloce 授权」，跳到站点的授权页；
 3. 在授权页选择一个已有令牌或新建一个令牌，确认授权；
-4. 浏览器回到应用内的 `auth-callback.html`，用同一份 `state` 换取令牌，自动填入 API Key，并把接口地址设为 `<站点>/v1`。
+4. 授权完成后站点把用户送回回调地址，只带 `state`：
+   - **原生应用**走自定义协议 `com.veloce.aiapp://auth/callback?state=…`（已在 Android intent-filter 与 iOS CFBundleURLSchemes 注册），系统直接把应用拉回前台；
+   - **浏览器 / PWA**走应用内的 `auth-callback.html?state=…`；
+5. 应用用同一份 `state` 换取令牌，自动填入 API Key，并把接口地址设为 `<站点>/v1`。
 
 令牌不会出现在任何跳转链接里；请求通过 `<站点>/v1` 的 OpenAI/Anthropic 兼容接口发出，因此站点需要允许跨域（Veloce 默认开启，可用 `CORS_ALLOWED_ORIGINS` 收紧）。附件上传与语音接口使用 `/files`、`/tools` 路径，需要服务端支持对应能力。
 

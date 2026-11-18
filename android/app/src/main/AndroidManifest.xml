@@ -22,6 +22,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Veloce 令牌授权回调：com.veloce.aiapp://auth/callback?state=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.veloce.aiapp" android:host="auth" />
+            </intent-filter>
+
         </activity>
 
         <provider

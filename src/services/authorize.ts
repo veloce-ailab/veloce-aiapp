@@ -3,18 +3,26 @@
  *
  * 流程（与后端 docs/token-authorization.md 一致）：
  * 1. 用户在设置里填站点地址，点击授权；
- * 2. 本应用生成高熵 state，跳转到 `<站点>/authorize?state=&redirect_uri=&app_name=`；
+ * 2. 本应用生成高熵 state，打开 `<站点>/authorize?state=&redirect_uri=&app_name=`；
  * 3. 用户在站点上选择或新建一个令牌并同意授权；
- * 4. 站点把浏览器送回 `<本应用>/auth-callback.html?state=`（不带令牌）；
- * 5. 回调页用同一个 state 向 `<站点>/api/oauth/token` 换取令牌，写入本机设置。
+ * 4. 站点把用户送回回调地址，且只带 `state`：
+ *    - 原生应用走自定义协议 `com.veloce.aiapp://auth/callback?state=…`，直接把应用拉回前台；
+ *    - 浏览器/PWA 走应用内的 `auth-callback.html?state=…`；
+ * 5. 回调里用同一个 state 向 `<站点>/api/oauth/token` 换取令牌，写入本机设置。
  */
+
+import { Capacitor } from '@capacitor/core'
+import { Browser } from '@capacitor/browser'
+import { setApiBaseUrl, setApiKey } from './settings.js'
 
 /** 授权请求相关信息在 localStorage 中的键 */
 const PENDING_KEY = 'chat-demo:veloce-authorize'
-/** 未完成的授权请求 10 分钟后失效，避免回调页拿到过期的 state */
+/** 未完成的授权请求 10 分钟后失效，避免回调拿到过期的 state */
 const PENDING_TTL = 10 * 60 * 1000
 /** 展示在站点授权页上的应用名 */
 export const AUTHORIZE_APP_NAME = 'Veloce AI App'
+/** 原生应用的授权回调协议；与 Android intent-filter、iOS CFBundleURLSchemes 保持一致 */
+export const NATIVE_CALLBACK_URL = 'com.veloce.aiapp://auth/callback'
 
 export interface PendingAuthorize {
   site: string
@@ -25,10 +33,17 @@ export interface PendingAuthorize {
 export interface AuthorizeResult {
   token: string
   site: string
-  /** 站点对应的 OpenAI/Anthropic 兼容接口前缀，形如 https://example.com/v1 */
+  /** 站点对应的兼容接口前缀，形如 https://example.com/v1 */
   apiBaseUrl: string
   name?: string
 }
+
+export type AuthorizeOutcome =
+  | { status: 'success' }
+  | { status: 'denied' }
+  | { status: 'expired' }
+  | { status: 'mismatch' }
+  | { status: 'failed'; message: string }
 
 const read = (key: string): string | null => {
   try {
@@ -89,9 +104,24 @@ export const createAuthorizeState = (): string => {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-/** 授权完成后站点会把浏览器送回这个地址（由本应用提供） */
+/** 浏览器/PWA 用的回调地址：应用内的静态页 */
 export const authorizeCallbackUrl = (): string =>
   new URL('auth-callback.html', window.location.href).toString()
+
+export const isNativePlatform = (): boolean => Capacitor.isNativePlatform()
+
+/** 站点授权完成后把用户送回哪里 */
+export const authorizeRedirectUri = (): string =>
+  isNativePlatform() ? NATIVE_CALLBACK_URL : authorizeCallbackUrl()
+
+/** 打开站点授权页：原生放进系统浏览器（Custom Tab），网页端直接当前页跳转 */
+export const openAuthorizePage = async (url: string): Promise<void> => {
+  if (isNativePlatform()) {
+    await Browser.open({ url })
+    return
+  }
+  window.location.assign(url)
+}
 
 export const buildAuthorizeUrl = (site: string, state: string, redirectUri: string): string => {
   const params = new URLSearchParams({
@@ -164,5 +194,45 @@ export const exchangeAuthorizeState = async (site: string, state: string): Promi
     site,
     apiBaseUrl: apiBaseUrlForSite(site),
     name: typeof body.name === 'string' ? body.name : undefined,
+  }
+}
+
+/**
+ * 处理授权回调：网页回调页与原生深链共用同一段逻辑。
+ * 校验 state 与本次请求一致后才兑换，成功即写入 API Key 与接口地址。
+ */
+export const completeAuthorize = async (redirectUrl: string): Promise<AuthorizeOutcome> => {
+  let params: URLSearchParams
+  try {
+    params = new URL(redirectUrl).searchParams
+  } catch {
+    return { status: 'mismatch' }
+  }
+
+  if (params.get('error')) {
+    clearPendingAuthorize()
+    return { status: 'denied' }
+  }
+
+  const pending = readPendingAuthorize()
+  if (!pending) {
+    return { status: 'expired' }
+  }
+
+  const state = params.get('state') ?? ''
+  if (!state || state !== pending.state) {
+    clearPendingAuthorize()
+    return { status: 'mismatch' }
+  }
+
+  try {
+    const result = await exchangeAuthorizeState(pending.site, state)
+    setApiBaseUrl(result.apiBaseUrl || apiBaseUrlForSite(pending.site))
+    setApiKey(result.token)
+    clearPendingAuthorize()
+    return { status: 'success' }
+  } catch (cause) {
+    clearPendingAuthorize()
+    return { status: 'failed', message: cause instanceof Error ? cause.message : String(cause) }
   }
 }

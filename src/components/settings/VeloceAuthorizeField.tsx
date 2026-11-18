@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { Button } from '../base/Button.js'
 import { setApiBaseUrl, useSettings } from '../../services/settings.js'
 import {
-  authorizeCallbackUrl,
+  authorizeRedirectUri,
   buildAuthorizeUrl,
   createAuthorizeState,
   normalizeSiteUrl,
+  openAuthorizePage,
   savePendingAuthorize,
 } from '../../services/authorize.js'
 import { useTranslate } from '../../i18n/index.js'
@@ -21,7 +22,7 @@ export const VeloceAuthorizeField = () => {
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const start = () => {
+  const start = async () => {
     const site = normalizeSiteUrl(value)
     if (!site) {
       setError(t('veloceSiteInvalid'))
@@ -30,8 +31,8 @@ export const VeloceAuthorizeField = () => {
     setError(null)
     const state = createAuthorizeState()
     savePendingAuthorize({ site, state, createdAt: Date.now() })
-    // 跳转到站点的授权页；返回时落在 auth-callback.html
-    window.location.assign(buildAuthorizeUrl(site, state, authorizeCallbackUrl()))
+    // 打开站点的授权页；回调走深链（原生）或 auth-callback.html（网页）
+    await openAuthorizePage(buildAuthorizeUrl(site, state, authorizeRedirectUri()))
   }
 
   return (
@@ -51,14 +52,14 @@ export const VeloceAuthorizeField = () => {
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                start()
+                void start()
               }
             }}
           />
         </div>
         {error ? <div className={styles.error}>{error}</div> : null}
         <div className={styles.apiKeyInput}>
-          <Button variant="primary" size="m" block onClick={start}>
+          <Button variant="primary" size="m" block onClick={() => void start()}>
             {t('veloceAuthorizeAction')}
           </Button>
         </div>

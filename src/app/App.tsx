@@ -19,6 +19,7 @@ import { SettingsDialog } from '../components/settings/SettingsDialog.js'
 import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
 import { onUploadNotice } from '../services/attachments.js'
+import { bindAuthorizeDeepLink } from '../services/authorizeDeepLink.js'
 import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
@@ -59,6 +60,8 @@ export const App = () => {
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
   useEffect(() => onUploadNotice(showToast), [])
   useEffect(bindChatPersistence, [])
+  // 原生应用的授权回调通过自定义协议深链送回
+  useEffect(bindAuthorizeDeepLink, [])
 
   // 授权回调页跳回来时带上 authorize=success / 取消原因，提示一次并清掉查询参数
   useEffect(() => {
