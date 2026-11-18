@@ -36,7 +36,7 @@ jobs:
           cache: pnpm
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -59,7 +59,7 @@ jobs:
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4 # v4 keeps the Node 24 runtime
         with:
           name: veloce-ai-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
