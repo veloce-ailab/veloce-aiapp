@@ -1,15 +1,18 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
 import { normalizeLocation, type UserLocation } from './location.js'
+import { applyApiBaseUrl } from './api/baseUrl.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 
-/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+/** 本机设置，存 localStorage：API Key、API 基地址、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
+  /** 自定义 API 基地址；null 表示使用构建期默认值 */
+  apiBaseUrl: string | null
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -21,6 +24,7 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
+  apiBaseUrl: 'chat-demo:api-base-url',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -87,16 +91,25 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
-export const useSettings = create<Settings>(() => ({
-  apiKey: read(KEYS.apiKey),
-  locale: initialLocale(),
-  location: initialLocation(),
-  themePreference: initialThemePreference(),
-  ttsVoice: initialTtsVoice(),
-  thinking: read(KEYS.thinking) === 'true',
-  search: read(KEYS.search) === 'true',
-  siderCollapsed: read(KEYS.siderCollapsed) === 'true',
-}))
+/** 未保存过时用构建期默认地址 */
+const initialApiBaseUrl = () => read(KEYS.apiBaseUrl)
+
+export const useSettings = create<Settings>(() => {
+  const apiBaseUrl = initialApiBaseUrl()
+  // 让 client / speech 在首次请求前就知道该连哪个站点
+  applyApiBaseUrl(apiBaseUrl)
+  return {
+    apiKey: read(KEYS.apiKey),
+    apiBaseUrl,
+    locale: initialLocale(),
+    location: initialLocation(),
+    themePreference: initialThemePreference(),
+    ttsVoice: initialTtsVoice(),
+    thinking: read(KEYS.thinking) === 'true',
+    search: read(KEYS.search) === 'true',
+    siderCollapsed: read(KEYS.siderCollapsed) === 'true',
+  }
+})
 
 export const setLocale = (locale: Locale) => {
   write(KEYS.locale, locale)
@@ -122,6 +135,14 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+/** 保存自定义 API 基地址（Veloce 授权后写入站点地址 + /v1） */
+export const setApiBaseUrl = (apiBaseUrl: string | null) => {
+  const normalized = apiBaseUrl?.trim() || null
+  write(KEYS.apiBaseUrl, normalized)
+  applyApiBaseUrl(normalized)
+  useSettings.setState({ apiBaseUrl: normalized })
 }
 
 export const setThinking = (thinking: boolean) => {

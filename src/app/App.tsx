@@ -60,6 +60,19 @@ export const App = () => {
   useEffect(() => onUploadNotice(showToast), [])
   useEffect(bindChatPersistence, [])
 
+  // 授权回调页跳回来时带上 authorize=success / 取消原因，提示一次并清掉查询参数
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const outcome = params.get('authorize')
+    if (!outcome) {
+      return
+    }
+    showToast(outcome === 'success' ? t('authorizeSuccessToast') : t('authorizeDeniedToast'))
+    params.delete('authorize')
+    const query = params.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
+  }, [t])
+
   // 搜索结果面板只属于当前会话
   useEffect(closeSearchPanel, [activeId])
   // 切换会话时停止朗读

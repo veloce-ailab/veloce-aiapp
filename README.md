@@ -6,6 +6,27 @@ A static chat demo powered by the DeepSeek API. No application backend is requir
 
 You can [try the app online](https://deepseek-ai.github.io/chat-demo/) or download the archive from [Releases](https://github.com/deepseek-ai/deepseek-chat-demo/releases), extract it, and double-click `index.html` to use it locally without installation or a build. Enter your API key in Settings before your first chat.
 
+## Mobile app and Veloce site authorization
+
+The repository ships a Capacitor shell (`capacitor.config.ts`, `android/`, `ios/`) that wraps `dist/` into a mobile app:
+
+```sh
+pnpm build            # produces dist/
+npx cap sync          # copies it into android/ and ios/
+npx cap open android  # or ios
+```
+
+Pushing to `main` runs `.github/workflows/android.yml`, which builds a debug APK in CI and uploads it as an artifact (no local Android SDK needed).
+
+Authorizing against a Veloce instance needs no manual API key:
+
+1. Open Settings → Data → **Veloce site authorization** and enter the site URL (e.g. `https://veloce.example.com`).
+2. Press “Authorize with Veloce” to open the site's authorization page.
+3. Pick an existing token or create a new one there and approve.
+4. The browser returns to the app's `auth-callback.html`, which redeems the same `state` for the token, fills in the API Key and points the API base URL at `<site>/v1`.
+
+The token never appears in a redirect URL. Requests go to the OpenAI/Anthropic-compatible `<site>/v1` endpoints, so the site has to allow cross-origin calls (Veloce enables it by default; restrict it with `CORS_ALLOWED_ORIGINS`). Attachment upload and speech use `/files` and `/tools`, which require server support.
+
 ## Getting started
 
 Install Node.js 22.12+ and pnpm, then run:

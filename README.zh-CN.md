@@ -35,6 +35,27 @@ pnpm build
 - Markdown、代码高亮、KaTeX 公式和 Mermaid 图表。
 - 简体中文与英文、浅色与深色主题、移动端布局、位置设置、历史导入导出。
 
+## 手机 App 与 Veloce 站点授权
+
+仓库内置 Capacitor 原生壳（`capacitor.config.ts` + `android/` + `ios/`），把 `dist/` 直接装进手机应用：
+
+```sh
+pnpm build          # 产物在 dist/
+npx cap sync        # 同步到 android/ 与 ios/
+npx cap open android  # 或 ios
+```
+
+推送 `main` 时 `.github/workflows/android.yml` 会在 CI 里构建 debug APK 并上传为构建产物（本机没装 Android SDK 也可以拿到 APK）。
+
+接入 Veloce 站点时不需要手工粘贴 API Key：
+
+1. 打开 设置 → 数据管理 → **Veloce 站点授权**，填入站点地址（例如 `https://veloce.example.com`）；
+2. 点击「使用 Veloce 授权」，跳到站点的授权页；
+3. 在授权页选择一个已有令牌或新建一个令牌，确认授权；
+4. 浏览器回到应用内的 `auth-callback.html`，用同一份 `state` 换取令牌，自动填入 API Key，并把接口地址设为 `<站点>/v1`。
+
+令牌不会出现在任何跳转链接里；请求通过 `<站点>/v1` 的 OpenAI/Anthropic 兼容接口发出，因此站点需要允许跨域（Veloce 默认开启，可用 `CORS_ALLOWED_ORIGINS` 收紧）。附件上传与语音接口使用 `/files`、`/tools` 路径，需要服务端支持对应能力。
+
 ## 数据
 
 API Key 和设置保存在浏览器 localStorage，会话及附件原件保存在 IndexedDB，本地数据按浏览器用户配置和站点源（origin）隔离。发送对话、上传附件和使用语音功能时，相应内容会提交给配置的 API 服务。

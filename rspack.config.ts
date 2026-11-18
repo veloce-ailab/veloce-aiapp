@@ -29,7 +29,11 @@ export const createConfig = ({
   devServer,
 }: ConfigOptions = {}): Configuration => ({
   mode: dev ? 'development' : 'production',
-  entry: './src/main.tsx',
+  // 主应用与 Veloce 授权回调页是两个入口，回调页只负责用 state 换令牌后跳回主应用
+  entry: {
+    main: './src/main.tsx',
+    'auth-callback': './src/auth-callback.ts',
+  },
   output: {
     path: path.resolve(root, 'dist'),
     // 运行时按当前脚本地址推导资源路径，file:// 下异步 chunk、字体都按相对位置加载
@@ -77,8 +81,16 @@ export const createConfig = ({
     // 经典 defer 脚本支持 file:// 页面的资源加载
     new rspack.HtmlRspackPlugin({
       template: './src/index.html',
+      filename: 'index.html',
+      chunks: ['main'],
       scriptLoading: 'defer',
       meta: { 'application-version': version },
+    }),
+    new rspack.HtmlRspackPlugin({
+      template: './src/auth-callback.html',
+      filename: 'auth-callback.html',
+      chunks: ['auth-callback'],
+      scriptLoading: 'defer',
     }),
     new rspack.DefinePlugin({ __API_ORIGIN__: JSON.stringify(apiOrigin) }),
     new rspack.CopyRspackPlugin({
