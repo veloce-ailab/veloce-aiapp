@@ -106,6 +106,7 @@ export const zh = {
   modelPlaceholder: '选择模型',
   modelCustomPlaceholder: '自定义模型名，例如 deepseek-flash',
   modelUseCustom: '使用该模型',
+  veloceCallbackUrl: '授权完成后返回：{url}',
   veloceSiteTitle: 'Veloce 站点授权',
   veloceSiteDescription: '填入站点地址后跳转到授权页，选择一个令牌或新建令牌，授权完成后会自动填入 API Key。',
   veloceSitePlaceholder: 'https://veloce.example.com',

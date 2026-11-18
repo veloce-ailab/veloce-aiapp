@@ -63,6 +63,7 @@ export const VeloceAuthorizeField = () => {
             {t('veloceAuthorizeAction')}
           </Button>
         </div>
+        <div className={styles.description}>{t('veloceCallbackUrl', { url: authorizeRedirectUri() })}</div>
         <div className={styles.description}>
           {apiBaseUrl ? t('veloceCurrentSite', { url: apiBaseUrl }) : t('veloceDefaultSite')}
         </div>

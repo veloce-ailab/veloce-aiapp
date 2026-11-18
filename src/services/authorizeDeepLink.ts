@@ -1,4 +1,5 @@
 import { App as CapacitorApp } from '@capacitor/app'
+import { Browser } from '@capacitor/browser'
 import { completeAuthorize, isNativePlatform } from './authorize.js'
 import { showToast } from '../components/base/toastState.js'
 import { translate } from '../i18n/index.js'
@@ -14,6 +15,8 @@ const handle = async (url: string) => {
   if (!url.startsWith(CALLBACK_PREFIX)) {
     return
   }
+  // 授权在系统浏览器里完成，回来时顺手关掉那个标签页
+  void Browser.close().catch(() => {})
   const outcome = await completeAuthorize(url)
   switch (outcome.status) {
     case 'success':

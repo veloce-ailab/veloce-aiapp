@@ -108,7 +108,22 @@ export const createAuthorizeState = (): string => {
 export const authorizeCallbackUrl = (): string =>
   new URL('auth-callback.html', window.location.href).toString()
 
-export const isNativePlatform = (): boolean => Capacitor.isNativePlatform()
+/**
+ * 是否运行在原生壳里。
+ * 除了 Capacitor 的桥接判断，再加一层 WebView 地址兜底：Android 的 https://localhost、
+ * iOS 的 capacitor://localhost 一定来自应用内部的静态资源，据此避免在浏览器里才用
+ * auth-callback.html、在应用里却错误地回到 localhost。
+ */
+export const isNativePlatform = (): boolean => {
+  if (Capacitor.isNativePlatform()) {
+    return true
+  }
+  const { protocol, hostname } = window.location
+  if (protocol === 'capacitor:' || protocol === 'ionic:') {
+    return true
+  }
+  return protocol === 'https:' && hostname === 'localhost'
+}
 
 /** 站点授权完成后把用户送回哪里 */
 export const authorizeRedirectUri = (): string =>
@@ -117,8 +132,12 @@ export const authorizeRedirectUri = (): string =>
 /** 打开站点授权页：原生放进系统浏览器（Custom Tab），网页端直接当前页跳转 */
 export const openAuthorizePage = async (url: string): Promise<void> => {
   if (isNativePlatform()) {
-    await Browser.open({ url })
-    return
+    try {
+      await Browser.open({ url })
+      return
+    } catch {
+      // 没有可用浏览器时退回应用内跳转
+    }
   }
   window.location.assign(url)
 }

@@ -111,6 +111,7 @@ export const en = {
   modelPlaceholder: 'Select model',
   modelCustomPlaceholder: 'Custom model name, e.g. deepseek-flash',
   modelUseCustom: 'Use this model',
+  veloceCallbackUrl: 'Returns to: {url}',
   veloceSiteTitle: 'Veloce site authorization',
   veloceSiteDescription: 'Enter your site URL to open the authorization page, pick or create a token, and the API Key is filled in automatically.',
   veloceSitePlaceholder: 'https://veloce.example.com',
