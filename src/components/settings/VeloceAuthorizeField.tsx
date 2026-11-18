@@ -9,6 +9,7 @@ import {
   openAuthorizePage,
   savePendingAuthorize,
 } from '../../services/authorize.js'
+import { runtimeSummary } from '../../services/runtimeInfo.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './Settings.module.css'
 
@@ -64,6 +65,7 @@ export const VeloceAuthorizeField = () => {
           </Button>
         </div>
         <div className={styles.description}>{t('veloceCallbackUrl', { url: authorizeRedirectUri() })}</div>
+        <div className={styles.description}>{runtimeSummary()}</div>
         <div className={styles.description}>
           {apiBaseUrl ? t('veloceCurrentSite', { url: apiBaseUrl }) : t('veloceDefaultSite')}
         </div>
