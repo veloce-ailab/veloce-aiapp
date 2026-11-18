@@ -2,6 +2,8 @@ import { translate, type TranslationMessage } from '../../i18n/index.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
 import { getApiBaseUrl } from './baseUrl.js'
+import { getApiProtocol } from './protocol.js'
+import { buildChatCompletionsBody, buildResponsesBody, streamChatCompletions, streamResponses } from './openaiStream.js'
 import type {
   ApiErrorBody,
   CreateMessageRequest,
@@ -145,6 +147,11 @@ export async function* streamMessage(
   body: CreateMessageRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
+  const protocol = getApiProtocol()
+  if (protocol !== 'claude') {
+    yield* streamOpenAICompatible(apiKey, body, signal, protocol)
+    return
+  }
   const response = await request(`${getApiBaseUrl()}/messages`, {
     method: 'POST',
     headers: {
@@ -185,4 +192,38 @@ export async function* streamMessage(
   }
   // 服务端没有提供错误内容时保持为空，不推测断流原因。
   throw new ApiError('interrupted', '')
+}
+
+/**
+ * OpenAI 兼容协议的流式请求：completions → /chat/completions，responses → /responses。
+ * 返回的事件与 claude 协议一致，调用方不需要区分。
+ */
+async function* streamOpenAICompatible(
+  apiKey: string,
+  body: CreateMessageRequest,
+  signal: AbortSignal,
+  protocol: 'completions' | 'responses'
+): AsyncGenerator<MessageStreamEvent> {
+  const url = `${getApiBaseUrl()}/${protocol === 'responses' ? 'responses' : 'chat/completions'}`
+  const response = await request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(protocol === 'responses' ? buildResponsesBody(body) : buildChatCompletionsBody(body)),
+    signal,
+  })
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!response.body || !contentType.includes('text/event-stream')) {
+    throw await readErrorResponse(response, 'protocol', '')
+  }
+  const events = protocol === 'responses' ? streamResponses(response.body, signal) : streamChatCompletions(response.body, signal)
+  for await (const event of events) {
+    yield event
+    if (event.type === 'message_stop') {
+      return
+    }
+  }
 }

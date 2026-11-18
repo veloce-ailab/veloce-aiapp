@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 import { applyApiBaseUrl } from './api/baseUrl.js'
+import { applyApiProtocol, normalizeApiProtocol, type ApiProtocol } from './api/protocol.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
@@ -15,6 +16,8 @@ type Settings = {
   apiBaseUrl: string | null
   /** 选中的模型；null 表示使用默认模型 */
   model: string | null
+  /** 聊天接口协议：claude / completions / responses */
+  protocol: ApiProtocol | null
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -28,6 +31,7 @@ const KEYS = {
   apiKey: 'chat-demo:api-key',
   apiBaseUrl: 'chat-demo:api-base-url',
   model: 'chat-demo:model',
+  protocol: 'chat-demo:protocol',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -101,10 +105,12 @@ export const useSettings = create<Settings>(() => {
   const apiBaseUrl = initialApiBaseUrl()
   // 让 client / speech 在首次请求前就知道该连哪个站点
   applyApiBaseUrl(apiBaseUrl)
+  applyApiProtocol(read(KEYS.protocol))
   return {
     apiKey: read(KEYS.apiKey),
     apiBaseUrl,
     model: read(KEYS.model),
+    protocol: read(KEYS.protocol) ? normalizeApiProtocol(read(KEYS.protocol)) : null,
     locale: initialLocale(),
     location: initialLocation(),
     themePreference: initialThemePreference(),
@@ -139,6 +145,12 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setProtocol = (protocol: ApiProtocol | null) => {
+  write(KEYS.protocol, protocol)
+  applyApiProtocol(protocol)
+  useSettings.setState({ protocol: protocol ? normalizeApiProtocol(protocol) : null })
 }
 
 export const setModel = (model: string | null) => {
